@@ -386,6 +386,84 @@ Results saved to `results/performance.json`.
 
 ---
 
+## Web Dashboard
+
+An interactive cybersecurity dashboard visualizes the same secure V2V protocol in a browser. The web layer is **additive** — the CLI and all `src/` security code remain unchanged.
+
+### Architecture
+
+```
+React + Vite + TypeScript (web/frontend)
+        │  HTTP REST + polling (2s)
+FastAPI (web/backend) — thin API wrapper
+        │  imports existing src/ modules
+Existing cryptographic implementation (src/)
+```
+
+See [WEB_ARCHITECTURE.md](WEB_ARCHITECTURE.md) for the full design.
+
+### Install Frontend Dependencies
+
+```bash
+cd web/frontend
+npm install
+```
+
+### Start Backend
+
+```bash
+source .venv/bin/activate
+PYTHONPATH=src:. uvicorn web.backend.main:app --reload --host 127.0.0.1 --port 8000
+```
+
+### Start Frontend
+
+```bash
+cd web/frontend
+npm run dev
+```
+
+Open **http://localhost:5173**. The Vite dev server proxies `/api/*` to the FastAPI backend on port 8000.
+
+### Dashboard Pages
+
+| Page | Purpose |
+|------|---------|
+| **Dashboard** | Live stats, vehicle network, certificate/security status |
+| **V2V Communication** | Send signed messages; view step-by-step security pipeline |
+| **Certificate Authority** | CA info and vehicle X.509 certificates (public data only) |
+| **Attack Simulation** | Replay, tampering, impersonation, fake certificate attacks |
+| **Security Event Log** | Real backend log events with filter/search |
+| **Performance** | Benchmark charts from `results/performance.json` |
+| **Architecture** | Interactive security architecture diagram |
+
+### API Endpoints
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/status` | Dashboard summary |
+| GET | `/api/vehicles` | Vehicle list with security status |
+| GET | `/api/certificates` | CA + vehicle certificates |
+| POST | `/api/message/send` | Send signed V2V message |
+| POST | `/api/attack/replay` | Replay attack simulation |
+| POST | `/api/attack/tampering` | Tampering attack simulation |
+| POST | `/api/attack/impersonation` | Impersonation attack |
+| POST | `/api/attack/fake-certificate` | Fake certificate attack |
+| GET | `/api/events` | Security event log |
+| GET | `/api/performance` | Benchmark results |
+| GET | `/api/architecture` | Architecture metadata |
+
+### Demo Guide
+
+See [WEB_DEMO_GUIDE.md](WEB_DEMO_GUIDE.md) for a step-by-step viva presentation script.
+
+### Screenshots
+
+<!-- Add screenshots after running the dashboard -->
+<!-- ![Dashboard](docs/screenshots/dashboard.png) -->
+
+---
+
 ## Progress Tracker
 
 See [PROJECT_PROGRESS.md](PROJECT_PROGRESS.md) for the complete phase checklist.
