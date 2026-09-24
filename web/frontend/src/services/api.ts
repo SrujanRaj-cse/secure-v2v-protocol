@@ -11,10 +11,9 @@ import type {
   Vehicle,
 } from '../types'
 
-/** Local dev: `/api` (Vite proxy). Production: set VITE_API_BASE_URL on Render. */
-const BASE = (
-  import.meta.env.VITE_API_BASE_URL?.trim() || '/api'
-).replace(/\/$/, '')
+/** Local dev: `/api` (Vite proxy). Production: set VITE_API_URL on Render (origin only, no /api). */
+const apiOrigin = (import.meta.env.VITE_API_URL || '').trim().replace(/\/+$/, '')
+const BASE = apiOrigin ? `${apiOrigin}/api` : '/api'
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
