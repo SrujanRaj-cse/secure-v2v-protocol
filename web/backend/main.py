@@ -3,6 +3,7 @@ FastAPI application — thin REST layer over existing V2V security code.
 """
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -26,9 +27,18 @@ app = FastAPI(
     version="1.0.0",
 )
 
+_cors_origins = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+]
+_extra = os.getenv("CORS_ORIGINS", "")
+if _extra:
+    _cors_origins.extend(o.strip() for o in _extra.split(",") if o.strip())
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=_cors_origins,
+    allow_origin_regex=r"https://.*\.onrender\.com",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

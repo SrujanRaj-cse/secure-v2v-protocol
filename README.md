@@ -425,6 +425,8 @@ npm run dev
 
 Open **http://localhost:5173**. The Vite dev server proxies `/api/*` to the FastAPI backend on port 8000.
 
+**Deployed frontend (Render):** set build-time env var `VITE_API_BASE_URL=https://secure-v2v-protocol.onrender.com/api` (see `web/frontend/.env.example`). Local dev omits this and uses `/api` via the proxy.
+
 ### Dashboard Pages
 
 | Page | Purpose |
