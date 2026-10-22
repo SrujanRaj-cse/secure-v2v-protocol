@@ -49,9 +49,47 @@ class SendMessageRequest(BaseModel):
     sender_id: str = Field(..., pattern=r"^[A-Z]\d{3}$")
     receiver_id: str = Field(..., pattern=r"^[A-Z]\d{3}$")
     event: str = "Emergency Braking"
-    speed: float | None = None
-    latitude: float | None = None
-    longitude: float | None = None
+    speed: float | None = Field(None, ge=0, le=400)
+    latitude: float | None = Field(None, ge=-90, le=90)
+    longitude: float | None = Field(None, ge=-180, le=180)
+
+
+class BroadcastRequest(BaseModel):
+    sender_id: str = Field(..., pattern=r"^[A-Z]\d{3}$")
+    event: str = "Emergency Braking"
+    speed: float | None = Field(None, ge=0, le=400)
+    latitude: float | None = Field(None, ge=-90, le=90)
+    longitude: float | None = Field(None, ge=-180, le=180)
+    range_m: float | None = Field(None, ge=0, le=100000)
+    packet_loss_probability: float | None = Field(None, ge=0, le=1)
+
+
+class SimulationConfigRequest(BaseModel):
+    communication_range_m: float | None = Field(None, ge=0, le=100000)
+    packet_loss_probability: float | None = Field(None, ge=0, le=1)
+    random_seed: int | None = Field(None, ge=0, le=2147483647)
+    relevance_threshold_m: float | None = Field(None, ge=0, le=100000)
+
+
+class VehicleUpdateRequest(BaseModel):
+    speed: float | None = Field(None, ge=0, le=400)
+    latitude: float | None = Field(None, ge=-90, le=90)
+    longitude: float | None = Field(None, ge=-180, le=180)
+    direction: str | None = None
+    acceleration: float | None = Field(None, ge=-20, le=20)
+    status: str | None = Field(None, pattern=r"^(ONLINE|OFFLINE)$")
+
+
+class VehicleCreateRequest(BaseModel):
+    vehicle_id: str = Field(..., pattern=r"^[A-Z][A-Z0-9]{2,9}$")
+    speed: float = Field(..., ge=0, le=400)
+    latitude: float = Field(..., ge=-90, le=90)
+    longitude: float = Field(..., ge=-180, le=180)
+    direction: str = "North"
+
+
+class SimulationStepRequest(BaseModel):
+    seconds: float = Field(1.0, gt=0, le=60)
 
 
 class TamperingRequest(BaseModel):
@@ -63,6 +101,13 @@ class TamperingRequest(BaseModel):
 class AttackRequest(BaseModel):
     receiver_id: str = "B001"
     target_id: str = "A001"
+
+
+class FalseDataRequest(BaseModel):
+    receiver_id: str = "B001"
+    speed: float = Field(300, ge=0, le=400)
+    latitude: float = Field(0, ge=-90, le=90)
+    longitude: float = Field(0, ge=-180, le=180)
 
 
 @app.get("/api/status")
@@ -94,6 +139,8 @@ def api_send_message(body: SendMessageRequest):
     position = None
     if body.latitude is not None and body.longitude is not None:
         position = (body.latitude, body.longitude)
+    elif body.latitude is not None or body.longitude is not None:
+        raise HTTPException(422, "Latitude and longitude must be supplied together")
     try:
         return state.send_message(
             body.sender_id,
@@ -102,6 +149,65 @@ def api_send_message(body: SendMessageRequest):
             speed=body.speed,
             position=position,
         )
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+
+
+@app.post("/api/message/broadcast")
+def api_broadcast(body: BroadcastRequest):
+    position = None
+    if body.latitude is not None and body.longitude is not None:
+        position = (body.latitude, body.longitude)
+    elif body.latitude is not None or body.longitude is not None:
+        raise HTTPException(422, "Latitude and longitude must be supplied together")
+    try:
+        return get_state().broadcast_message(
+            body.sender_id, body.event, body.speed, position,
+            body.range_m, body.packet_loss_probability)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+
+
+@app.get("/api/simulation/config")
+def api_simulation_config():
+    return dict(get_state().simulation_config)
+
+
+@app.put("/api/simulation/config")
+def api_update_simulation_config(body: SimulationConfigRequest):
+    try:
+        return get_state().update_simulation_config(**body.model_dump(exclude_unset=True))
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+
+
+@app.patch("/api/vehicles/{vehicle_id}")
+def api_update_vehicle(vehicle_id: str, body: VehicleUpdateRequest):
+    data = body.model_dump(exclude_unset=True)
+    position = None
+    if "latitude" in data or "longitude" in data:
+        if "latitude" not in data or "longitude" not in data:
+            raise HTTPException(422, "Latitude and longitude must be supplied together")
+        position = (data.pop("latitude"), data.pop("longitude"))
+    try:
+        return get_state().update_vehicle(vehicle_id, position=position, **data)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+
+
+@app.post("/api/vehicles")
+def api_create_vehicle(body: VehicleCreateRequest):
+    try:
+        return get_state().register_vehicle(body.vehicle_id, body.speed,
+            (body.latitude, body.longitude), body.direction)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+
+
+@app.post("/api/simulation/step")
+def api_simulation_step(body: SimulationStepRequest):
+    try:
+        return get_state().advance_simulation(body.seconds)
     except ValueError as e:
         raise HTTPException(400, str(e)) from e
 
@@ -133,6 +239,22 @@ def api_attack_impersonation(body: AttackRequest):
 def api_attack_fake_certificate(body: AttackRequest):
     try:
         return get_state().attack_fake_certificate(body.receiver_id)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+
+
+@app.post("/api/attack/stale")
+def api_attack_stale(body: AttackRequest):
+    try:
+        return get_state().attack_stale(body.receiver_id)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+
+
+@app.post("/api/attack/false-data")
+def api_attack_false_data(body: FalseDataRequest):
+    try:
+        return get_state().attack_false_data(body.receiver_id, body.speed, body.latitude, body.longitude)
     except ValueError as e:
         raise HTTPException(400, str(e)) from e
 

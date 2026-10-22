@@ -2,7 +2,10 @@
 
 **Course:** CS428 — Design of Secure Protocol  
 **Type:** Educational security protocol simulator (Python)
+<<<<<<< HEAD
 
+=======
+>>>>>>> b5e801b (broadcast)
 **Link:** https://secure-v2v-protocol-1.onrender.com/
 ---
 
@@ -470,3 +473,40 @@ See [WEB_DEMO_GUIDE.md](WEB_DEMO_GUIDE.md) for a step-by-step viva presentation 
 ## Progress Tracker
 
 See [PROJECT_PROGRESS.md](PROJECT_PROGRESS.md) for the complete phase checklist.
+
+## Multi-Vehicle Broadcast Simulation
+
+The Communication page now supports broadcast and the existing unicast mode. A broadcast creates one versioned safety message, signs its canonical compact sorted JSON once with the existing ECDSA/SHA-256 implementation, then applies an in-process geographic range and seeded packet-loss model. Every delivered packet is independently checked by the receiver's certificate, identity, signature, freshness, and per-receiver replay pipeline. Safety relevance is evaluated only after successful authentication and is shown separately from verification.
+
+The simulated coordinates are decimal latitude/longitude, speed is km/h, acceleration is m/s², communication/relevance ranges are meters, and packet loss is a probability. Defaults are 500 m range, 0 packet loss, seed 428. These are educational simulation parameters; the channel is not physical radio and the safety model is not vehicle-control software.
+
+### Run checks and benchmark
+
+```bash
+./.venv/bin/pytest -q
+cd web/frontend && npm run build && npm run lint
+cd ../..
+./.venv/bin/python scripts/benchmark_broadcast.py --iterations 3 --seed 428
+```
+
+The benchmark records results in `results/broadcast_benchmark.csv`. It reports measurements from this local Python environment only; no result represents real V2V latency.
+
+### Broadcast and simulation API
+
+`POST /api/message/broadcast` accepts:
+
+```json
+{"sender_id":"A001","event":"Emergency Braking","speed":80,"latitude":17.385,"longitude":78.4867,"range_m":500,"packet_loss_probability":0.0}
+```
+
+`range_m` and loss are optional and default to the simulation configuration. The response contains one packet, a signature count of 1, timing metrics, and a result for each registry entry including sender exclusion, distance/range status, packet delivery, verification, and safety evaluation.
+
+`GET /api/simulation/config` returns configuration. `PUT /api/simulation/config` accepts any subset of `communication_range_m`, `packet_loss_probability`, `random_seed`, and `relevance_threshold_m`. `POST /api/vehicles` creates a CA-registered simulation vehicle (`vehicle_id`, `speed`, `latitude`, `longitude`, `direction`). `PATCH /api/vehicles/{vehicle_id}` updates its speed, position, heading, acceleration, or `ONLINE`/`OFFLINE` state. `POST /api/simulation/step` advances online vehicles (`{"seconds":1}`).
+
+Unicast remains available at `POST /api/message/send` with `sender_id`, `receiver_id`, `event`, and optional `speed`, `latitude`, `longitude`. API schemas and all routes are available in the FastAPI OpenAPI UI at `/docs`.
+
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), [docs/SECURITY_ANALYSIS.md](docs/SECURITY_ANALYSIS.md), [docs/DEMO_GUIDE.md](docs/DEMO_GUIDE.md), and [docs/IMPLEMENTATION_PROGRESS.md](docs/IMPLEMENTATION_PROGRESS.md).
+
+### Local API troubleshooting
+
+Start both services in separate terminals. In local Vite development the API client always uses the same-origin `/api` proxy to `http://127.0.0.1:8000`, even if the ignored `web/frontend/.env` contains the production Render URL. Set `VITE_API_URL` for production builds only; it may be an origin or an URL ending in `/api` (the client normalizes either form). The Vite proxy path matches FastAPI's `/api/...` routes. For Performance, `GET /api/performance` reads `results/performance.json`; **Run Benchmark** calls `POST /api/performance/run?iterations=100`, which runs the real existing Python benchmark and returns its measured result. If no saved JSON is present, the page explains that and offers the real run action.

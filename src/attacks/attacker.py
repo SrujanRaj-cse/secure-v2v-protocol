@@ -92,7 +92,9 @@ class Attacker:
             sequence_number=999,
             position=(0.0, 0.0),
             speed=200,
-            direction="Unknown",
+            # Keep the forged message structurally valid so the demo reaches
+            # certificate verification instead of failing schema validation.
+            direction="North",
             event=event,
         )
 

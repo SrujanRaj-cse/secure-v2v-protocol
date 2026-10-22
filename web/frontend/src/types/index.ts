@@ -19,6 +19,9 @@ export interface Vehicle {
   connection_status: string
   security_status: string
   last_event: string | null
+  status?: 'ONLINE' | 'OFFLINE'
+  heading_degrees?: number | null
+  acceleration?: number
 }
 
 export interface CertificateInfo {
@@ -69,6 +72,48 @@ export interface SendMessageResponse {
   reason: string
   pipeline: PipelineStep[]
   message_hash: string
+  packet: { message: Record<string, unknown>; signature_b64: string; certificate_pem: string }
+}
+
+export interface VerificationGate {
+  name: 'Schema' | 'Certificate' | 'Signature' | 'Freshness' | 'Replay' | 'Relevance'
+  status: 'passed' | 'failed' | 'skipped' | 'not_reported' | 'warning' | 'relevant' | 'not_relevant'
+  reason: string | null
+}
+
+export interface BroadcastRecipient {
+  receiver_id: string
+  message_id: string
+  distance_m: number | null
+  delivery_status: string
+  attempted_delivery: boolean
+  verification_status: string
+  safety_status: string
+  accepted: boolean
+  rejection_reason: string | null
+  processing_ms: number
+  verification_ms?: number
+  safety_evaluation_performed: boolean
+  safety: { relevant: boolean; distance_m: number | null; relative_speed_mps: number | null; ttc_seconds: number | null; reason: string; warning: boolean } | null
+  verification_gates?: VerificationGate[]
+}
+
+export interface BroadcastResponse {
+  message_id: string
+  packet: { message: Record<string, unknown>; signature_b64: string; certificate_pem: string }
+  message_hash: string
+  signature_count: number
+  range_m: number
+  packet_loss_probability: number
+  seed: number
+  recipients: BroadcastRecipient[]
+}
+
+export interface SimulationConfig {
+  communication_range_m: number
+  packet_loss_probability: number
+  random_seed: number
+  relevance_threshold_m: number
 }
 
 export interface AttackResponse {
@@ -76,11 +121,16 @@ export interface AttackResponse {
   accepted: boolean
   reason: string
   pipeline: PipelineStep[]
+  packet?: { message: Record<string, unknown>; signature_b64: string; certificate_pem: string }
+  safety?: { relevant: boolean; distance_m: number | null; relative_speed_mps: number | null; ttc_seconds: number | null; reason: string; warning: boolean }
   original_message?: Record<string, unknown>
   modified_message?: Record<string, unknown>
   replayed_message?: Record<string, unknown>
   forged_message?: Record<string, unknown>
   explanation?: string
+  cryptographically_authenticated?: boolean
+  plausibility_suspicious?: boolean
+  plausibility_flags?: string[]
 }
 
 export interface SecurityEvent {

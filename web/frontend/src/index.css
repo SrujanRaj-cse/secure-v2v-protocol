@@ -23,6 +23,29 @@ body {
   min-height: 100vh;
 }
 
+.trust-radar-pulse {
+  transform-origin: 50% 50%;
+  animation: trust-radar-wave 1.25s ease-out both;
+}
+
+@keyframes trust-radar-wave {
+  from { opacity: 0.85; transform: scale(0.04); }
+  to { opacity: 0; transform: scale(1); }
+}
+
+.trust-radar-red {
+  --trust-radar-accent: #cf5962;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;

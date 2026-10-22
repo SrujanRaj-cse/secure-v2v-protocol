@@ -8,11 +8,13 @@ import {
   Network,
   Radio,
   ShieldAlert,
+  Radar,
 } from 'lucide-react'
 
 const links = [
   { to: '/', label: 'Dashboard', icon: LayoutDashboard },
   { to: '/communication', label: 'V2V Communication', icon: Radio },
+  { to: '/trust-radar', label: 'Trust Radar', icon: Radar },
   { to: '/certificates', label: 'Certificate Authority', icon: Building2 },
   { to: '/attacks', label: 'Attack Simulation', icon: ShieldAlert },
   { to: '/events', label: 'Security Event Log', icon: FileText },

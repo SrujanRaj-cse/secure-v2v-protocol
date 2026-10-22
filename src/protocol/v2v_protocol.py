@@ -68,6 +68,8 @@ class SecureVehicle:
         self.speed = speed
         self.position = position
         self.direction = direction
+        self.status = "ONLINE"
+        self.acceleration = 0.0
         self.private_key = private_key
         self.certificate = certificate
         self.sequence_number = 0

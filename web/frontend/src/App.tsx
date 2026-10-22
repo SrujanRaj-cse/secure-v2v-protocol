@@ -7,6 +7,7 @@ import { AttacksPage } from './pages/Attacks'
 import { EventLogPage } from './pages/EventLogPage'
 import { PerformancePage } from './pages/Performance'
 import { ArchitecturePage } from './pages/Architecture'
+import { TrustRadarPage } from './pages/TrustRadar'
 
 export default function App() {
   return (
@@ -15,6 +16,7 @@ export default function App() {
         <Route element={<Layout />}>
           <Route index element={<DashboardPage />} />
           <Route path="communication" element={<CommunicationPage />} />
+          <Route path="trust-radar" element={<TrustRadarPage />} />
           <Route path="certificates" element={<CertificatesPage />} />
           <Route path="attacks" element={<AttacksPage />} />
           <Route path="events" element={<EventLogPage />} />

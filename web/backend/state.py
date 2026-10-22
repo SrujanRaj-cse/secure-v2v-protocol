@@ -5,7 +5,9 @@ Holds CA, vehicles, attacker, stats, and last-captured packet for attacks.
 """
 
 import copy
+import math
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -16,7 +18,7 @@ if str(SRC) not in sys.path:
 
 from attacks.attacker import Attacker  # noqa: E402
 from ca.certificate_authority import CertificateAuthority  # noqa: E402
-from protocol.messages import SAFETY_EVENTS, create_safety_message  # noqa: E402
+from protocol.messages import SAFETY_EVENTS, create_safety_message, serialize_message  # noqa: E402
 from protocol.v2v_protocol import SecureVehicle, create_signed_packet  # noqa: E402
 from security.hashing import hash_message_hex  # noqa: E402
 from security.keys import generate_key_pair  # noqa: E402
@@ -29,12 +31,14 @@ from web.backend.serializers import (  # noqa: E402
 from security.replay import ReplayProtector  # noqa: E402
 
 from web.backend.verification_pipeline import verify_with_pipeline  # noqa: E402
+from web.backend.broadcast import BroadcastService  # noqa: E402
 
 
 def _replay_protector_snapshot(protector: ReplayProtector) -> ReplayProtector:
     """Copy replay state so pipeline preview does not mutate the receiver."""
     snap = ReplayProtector(timestamp_window=protector.timestamp_window)
-    snap.last_sequence_numbers = copy.deepcopy(protector.last_sequence_numbers)
+    with protector._lock:
+        snap.last_sequence_numbers = copy.deepcopy(protector.last_sequence_numbers)
     return snap
 
 # UI label → backend event mapping
@@ -46,6 +50,11 @@ EVENT_MAP = {
     "Accident Warning": "ACCIDENT_WARNING",
     "Road Hazard": "ROAD_HAZARD",
 }
+
+def _heading_degrees(direction: str) -> float | None:
+    return {"North": 0.0, "Northeast": 45.0, "East": 90.0,
+            "Southeast": 135.0, "South": 180.0, "Southwest": 225.0,
+            "West": 270.0, "Northwest": 315.0}.get(direction)
 
 
 class SimulationState:
@@ -68,13 +77,22 @@ class SimulationState:
         self.last_message: dict[str, Any] | None = None
         self.last_packet: dict | None = None
         self.last_pipeline: list | None = None
+        self.simulation_config = {
+            "communication_range_m": 500.0,
+            "packet_loss_probability": 0.0,
+            "random_seed": 428,
+            "relevance_threshold_m": 500.0,
+        }
 
         self._register_default_vehicles()
+        self.broadcast_service = BroadcastService(self.vehicles, self.simulation_config["random_seed"])
 
     def _register_default_vehicles(self):
         configs = [
             ("A001", 80, (17.3850, 78.4867), "North"),
-            ("B001", 75, (17.3860, 78.4870), "North"),
+            # B001 follows A001 from ~100 m behind and closes at 40 km/h.
+            # The resulting initial TTC is about 9 seconds for the default event.
+            ("B001", 120, (17.3841, 78.4867), "North"),
             ("C001", 60, (17.3870, 78.4880), "East"),
         ]
         for vid, speed, pos, direction in configs:
@@ -112,11 +130,158 @@ class SimulationState:
                     "sequence_number": vehicle.sequence_number,
                     "certificate_status": "VALID" if cert_ok else "INVALID",
                     "connection_status": "SECURE",
+                    "status": getattr(vehicle, "status", "ONLINE"),
+                    "heading_degrees": _heading_degrees(vehicle.direction),
+                    "acceleration": getattr(vehicle, "acceleration", 0.0),
                     "security_status": "SECURE" if cert_ok else "COMPROMISED",
                     "last_event": getattr(vehicle, "_last_event", None),
                 }
             )
         return result
+
+    def update_vehicle(self, vehicle_id: str, *, position=None, speed=None,
+                       direction=None, acceleration=None, status=None) -> dict:
+        vehicle = self.vehicles.get(vehicle_id)
+        if vehicle is None:
+            raise ValueError(f"Unknown vehicle: {vehicle_id}")
+        if position is not None:
+            lat, lon = position
+            if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+                raise ValueError("Coordinates must be valid latitude/longitude")
+            vehicle.position = (lat, lon)
+        if speed is not None:
+            if not 0 <= speed <= 400:
+                raise ValueError("Speed must be between 0 and 400 km/h")
+            vehicle.speed = speed
+        if direction is not None:
+            if direction not in ("North", "Northeast", "East", "Southeast", "South", "Southwest", "West", "Northwest"):
+                raise ValueError("Direction must be a compass heading")
+            vehicle.direction = direction
+        if acceleration is not None:
+            if not -20 <= acceleration <= 20:
+                raise ValueError("Acceleration must be between -20 and 20 m/s²")
+            vehicle.acceleration = acceleration
+        if status is not None:
+            vehicle.status = status
+        return next(v for v in self.get_vehicles() if v["vehicle_id"] == vehicle_id)
+
+    def register_vehicle(self, vehicle_id: str, speed: float, position: tuple[float, float],
+                         direction: str) -> dict:
+        if vehicle_id in self.vehicles:
+            raise ValueError(f"Vehicle already exists: {vehicle_id}")
+        if not vehicle_id or len(vehicle_id) > 10:
+            raise ValueError("Vehicle ID must contain 1 to 10 characters")
+        if not 0 <= speed <= 400 or not -90 <= position[0] <= 90 or not -180 <= position[1] <= 180:
+            raise ValueError("Vehicle state is outside valid speed or coordinate bounds")
+        if direction not in ("North", "Northeast", "East", "Southeast", "South", "Southwest", "West", "Northwest"):
+            raise ValueError("Direction must be a compass heading")
+        key = generate_key_pair()
+        certificate = self.ca.register_vehicle(vehicle_id, key.public_key())
+        self.vehicles[vehicle_id] = SecureVehicle(vehicle_id, speed, position, direction, key, certificate, self.ca)
+        return next(v for v in self.get_vehicles() if v["vehicle_id"] == vehicle_id)
+
+    def advance_simulation(self, seconds: float) -> list[dict]:
+        if not 0 < seconds <= 60:
+            raise ValueError("Simulation step must be greater than 0 and at most 60 seconds")
+        for vehicle in self.vehicles.values():
+            if vehicle.status != "ONLINE":
+                continue
+            initial_mps = vehicle.speed / 3.6
+            final_mps = max(0.0, min(400 / 3.6, initial_mps + vehicle.acceleration * seconds))
+            distance_m = (initial_mps + final_mps) * 0.5 * seconds
+            heading = math.radians(_heading_degrees(vehicle.direction) or 0.0)
+            lat, lon = vehicle.position
+            lat += distance_m * math.cos(heading) / 111_320
+            lon += distance_m * math.sin(heading) / (111_320 * max(0.01, math.cos(math.radians(lat))))
+            vehicle.position = (max(-90, min(90, lat)), ((lon + 180) % 360) - 180)
+            vehicle.speed = final_mps * 3.6
+        return self.get_vehicles()
+
+    def update_simulation_config(self, *, communication_range_m=None,
+                                 packet_loss_probability=None, random_seed=None,
+                                 relevance_threshold_m=None) -> dict:
+        if communication_range_m is not None:
+            if not 0 <= communication_range_m <= 100_000:
+                raise ValueError("Communication range must be between 0 and 100000 meters")
+            self.simulation_config["communication_range_m"] = communication_range_m
+        if packet_loss_probability is not None:
+            if not 0 <= packet_loss_probability <= 1:
+                raise ValueError("Packet loss probability must be between 0 and 1")
+            self.simulation_config["packet_loss_probability"] = packet_loss_probability
+        if random_seed is not None:
+            self.simulation_config["random_seed"] = random_seed
+            self.broadcast_service.reset_seed(random_seed)
+        if relevance_threshold_m is not None:
+            if not 0 <= relevance_threshold_m <= 100_000:
+                raise ValueError("Relevance threshold must be between 0 and 100000 meters")
+            self.simulation_config["relevance_threshold_m"] = relevance_threshold_m
+        return dict(self.simulation_config)
+
+    def broadcast_message(self, sender_id: str, event_label: str,
+                          speed: float | None = None, position: tuple | None = None,
+                          range_m: float | None = None,
+                          packet_loss_probability: float | None = None) -> dict:
+        sender = self.vehicles.get(sender_id)
+        if sender is None:
+            raise ValueError(f"Unknown vehicle: {sender_id}")
+        event = EVENT_MAP.get(event_label, event_label)
+        if event not in SAFETY_EVENTS:
+            raise ValueError(f"Invalid event: {event_label}")
+        if speed is not None:
+            if not 0 <= speed <= 400:
+                raise ValueError("Speed must be between 0 and 400 km/h")
+            sender.speed = speed
+        if position is not None:
+            self.update_vehicle(sender_id, position=position)
+        if sender.status != "ONLINE":
+            raise ValueError("Offline vehicles cannot broadcast")
+        creation_started = time.perf_counter()
+        message = sender.create_message(event)
+        message_creation_ms = (time.perf_counter() - creation_started) * 1000
+        signing_started = time.perf_counter()
+        packet = create_signed_packet(message, sender.private_key, sender.certificate)
+        signing_ms = (time.perf_counter() - signing_started) * 1000
+        sender._last_event = event
+        selected_range = range_m if range_m is not None else self.simulation_config["communication_range_m"]
+        loss = packet_loss_probability if packet_loss_probability is not None else self.simulation_config["packet_loss_probability"]
+        # Evaluate each recipient with the configured relevance threshold.
+        outcomes = self.broadcast_service.broadcast(sender_id, packet, selected_range, loss)
+        for outcome in outcomes:
+            if outcome.get("safety") is not None:
+                from web.backend.safety import evaluate_relevance
+                receiver = self.vehicles[outcome["receiver_id"]]
+                outcome["safety"] = evaluate_relevance(
+                    {"position": receiver.position, "speed": receiver.speed, "direction": receiver.direction},
+                    packet["message"], self.simulation_config["relevance_threshold_m"])
+                outcome["safety_status"] = (
+                    "warning_generated" if outcome["safety"]["warning"] else
+                    "accepted_relevant" if outcome["safety"]["relevant"] else
+                    "accepted_irrelevant")
+        self.stats["messages_sent"] += 1
+        self.stats["messages_verified"] += sum(item["accepted"] for item in outcomes)
+        self.stats["messages_rejected"] += sum(item["delivery_status"] == "delivered" and not item["accepted"] for item in outcomes)
+        self.last_packet = packet
+        self.last_message = packet["message"]
+        self.attacker.capture(packet)
+        return {
+            "message_id": packet["message"]["message_id"],
+            "packet": packet_to_api(packet),
+            "message_hash": hash_message_hex(serialize_message(packet["message"])),
+            "signature_count": 1,
+            "range_m": selected_range,
+            "packet_loss_probability": loss,
+            "seed": self.broadcast_service.seed,
+            "performance_metrics": {
+                "message_creation_ms": round(message_creation_ms, 4),
+                "signing_ms": round(signing_ms, 4),
+                **{key: round(value, 4) for key, value in self.broadcast_service.last_metrics.items()},
+                "total_broadcast_ms": round(message_creation_ms + signing_ms + sum(self.broadcast_service.last_metrics.values()), 4),
+            },
+            "recipients": outcomes,
+        }
+
+    def deliver_packet(self, receiver_id: str, packet: dict) -> dict:
+        return self.broadcast_service.deliver_packet(receiver_id, packet)
 
     def get_certificates(self) -> dict:
         ca_cert = self.ca.ca_certificate
@@ -281,6 +446,7 @@ class SimulationState:
             "accepted": accepted,
             "reason": reason,
             "pipeline": pipeline,
+            "packet": packet_to_api(tampered),
             "original_message": original["message"],
             "modified_message": tampered["message"],
             "explanation": "Message was modified after signing — signature no longer matches.",
@@ -340,6 +506,60 @@ class SimulationState:
             "reason": reason,
             "pipeline": pipeline,
         }
+
+    def attack_stale(self, receiver_id: str = "B001") -> dict:
+        sender = self.vehicles.get("A001")
+        receiver = self.vehicles.get(receiver_id)
+        if sender is None or receiver is None:
+            raise ValueError("Unknown sender or receiver")
+        message = sender.create_message("EMERGENCY_BRAKING")
+        message["timestamp"] = time.time() - 60.0
+        packet = create_signed_packet(message, sender.private_key, sender.certificate)
+        accepted, reason = receiver.receive_packet(packet)
+        if not accepted:
+            self.stats["attacks_detected"] += 1
+            self.stats["messages_rejected"] += 1
+        return {"attack": "stale", "accepted": accepted, "reason": reason,
+                "pipeline": verify_with_pipeline(packet, self.ca,
+                    _replay_protector_snapshot(receiver.verifier.replay_protector))["steps"],
+                "original_message": message}
+
+    def attack_false_data(self, receiver_id: str = "B001", speed: float = 300.0,
+                          latitude: float = 0.0, longitude: float = 0.0) -> dict:
+        sender = self.vehicles.get("A001")
+        receiver = self.vehicles.get(receiver_id)
+        if sender is None or receiver is None:
+            raise ValueError("Unknown sender or receiver")
+        if not 0 <= speed <= 400 or not -90 <= latitude <= 90 or not -180 <= longitude <= 180:
+            raise ValueError("False-data values must remain within schema bounds")
+        original_speed, original_position = sender.speed, sender.position
+        try:
+            sender.speed, sender.position = speed, (latitude, longitude)
+            packet = sender.send_message("ROAD_HAZARD")
+        finally:
+            sender.speed, sender.position = original_speed, original_position
+        pipeline = verify_with_pipeline(
+            packet, self.ca,
+            _replay_protector_snapshot(receiver.verifier.replay_protector),
+        )["steps"]
+        accepted, reason = receiver.receive_packet(packet)
+        # Educational plausibility policy is advisory and does not alter authentication.
+        plausibility_flags = []
+        if speed > 180:
+            plausibility_flags.append("Reported speed exceeds the demo plausibility threshold of 180 km/h")
+        if abs(latitude) < 1 and abs(longitude) < 1:
+            plausibility_flags.append("Reported position is far from the configured local scenario")
+        from web.backend.safety import evaluate_relevance
+        safety = evaluate_relevance(
+            {"position": receiver.position, "speed": receiver.speed, "direction": receiver.direction},
+            packet["message"], self.simulation_config["relevance_threshold_m"])
+        return {"attack": "false_data", "accepted": accepted, "reason": reason,
+                "cryptographically_authenticated": accepted,
+                "plausibility_suspicious": bool(plausibility_flags),
+                "plausibility_flags": plausibility_flags, "safety": safety,
+                "pipeline": pipeline, "packet": packet_to_api(packet),
+                "original_message": packet["message"],
+                "explanation": "The signature authenticates the sender and signed bytes; it does not establish that reported telemetry is truthful."}
 
 
 # Module-level singleton

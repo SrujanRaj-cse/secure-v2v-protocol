@@ -91,7 +91,7 @@ export function AttacksPage() {
 
         <AttackCard
           title="Impersonation Attack"
-          description="Attacker forges a message claiming to be a legitimate vehicle using a self-signed fake certificate. Expected: rejected by CA certificate verification."
+          description="Attacker signs a schema-valid message claiming to be A001 with an untrusted self-signed certificate. Expected: rejected by certificate verification."
           variant="impersonation"
           loading={loading === 'impersonation'}
           onLaunch={() => launch('impersonation', () => api.attackImpersonation())}
@@ -106,7 +106,7 @@ export function AttacksPage() {
 
         <AttackCard
           title="Fake Certificate Attack"
-          description="Attacker swaps the certificate on a legitimate signed message. Expected: rejected by vehicle ID mismatch or signature failure."
+          description="Attacker swaps a valid registered EVIL001 certificate onto A001's signed message. Expected: certificate validation passes, then identity validation rejects the vehicle ID mismatch."
           variant="impersonation"
           loading={loading === 'fake'}
           onLaunch={() => launch('fake', () => api.attackFakeCertificate())}
@@ -117,6 +117,32 @@ export function AttacksPage() {
               mechanism="Certificate + identity verification"
             />
           )}
+        </AttackCard>
+
+        <AttackCard
+          title="Stale Signed Message"
+          description="A correctly signed emergency message is created with a timestamp outside the freshness window. Expected: rejected as stale after cryptographic checks."
+          variant="replay"
+          loading={loading === 'stale'}
+          onLaunch={() => launch('stale', () => api.attackStale())}
+        >
+          {results.stale && <AttackResult result={results.stale} mechanism="Timestamp freshness" />}
+        </AttackCard>
+
+        <AttackCard
+          title="False Data from Valid Sender"
+          description="A validly authenticated sender reports an implausible speed and distant position. Authentication can succeed while plausibility and relevance remain separate questions."
+          variant="tamper"
+          loading={loading === 'false-data'}
+          onLaunch={() => launch('false-data', () => api.attackFalseData())}
+        >
+          {results['false-data'] && <>
+            <p className="mt-3 text-xs text-amber-300">
+              {results['false-data'].cryptographically_authenticated ? 'Signature accepted' : 'Signature rejected'} · {results['false-data'].plausibility_suspicious ? 'plausibility flags raised' : 'no plausibility flags'}
+            </p>
+            {results['false-data'].plausibility_flags?.map((flag) => <p key={flag} className="mt-1 text-xs text-slate-400">{flag}</p>)}
+            <AttackResult result={results['false-data']} mechanism="Authentication and advisory plausibility checks" />
+          </>}
         </AttackCard>
       </div>
     </div>
@@ -130,8 +156,12 @@ function AttackResult({
   result: AttackResponse
   mechanism: string
 }) {
+  const failedStep = result.pipeline?.find((step) => step.status === 'failed')
   return (
     <div className="mt-3">
+      {!result.accepted && failedStep && (
+        <p className="mb-2 text-xs text-red-300">Rejected at: {failedStep.name}</p>
+      )}
       <Alert
         accepted={result.accepted}
         reason={result.reason}
